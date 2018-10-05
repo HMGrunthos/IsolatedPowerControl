@@ -14757,7 +14757,6 @@ Source: http://www.fairchildsemi.com/ds/FD/FDN360P.pdf</description>
 <part name="T3" library="transistor" deviceset="*-NPN-" device="SOT23-BEC" technology="MMBTA42LT1"/>
 <part name="R12" library="rcl" deviceset="R-EU_" device="R0603" value="10"/>
 <part name="P+9" library="supply1" deviceset="V+" device=""/>
-<part name="P-5" library="supply1" deviceset="V-" device=""/>
 <part name="U2" library="MCP4716A0T" deviceset="MCP4716A0T-E/CH" device=""/>
 <part name="P-6" library="supply1" deviceset="V-" device=""/>
 <part name="P+11" library="supply1" deviceset="V+" device=""/>
@@ -14798,6 +14797,7 @@ Source: http://www.fairchildsemi.com/ds/FD/FDN360P.pdf</description>
 <part name="R15" library="rcl" deviceset="R-EU_" device="R0603" value="10"/>
 <part name="R16" library="rcl" deviceset="R-EU_" device="R0805" value="10K"/>
 <part name="Q2" library="transistor-power" deviceset="FDN360P" device="" value="FDN340P"/>
+<part name="P-5" library="supply1" deviceset="V-" device=""/>
 </parts>
 <sheets>
 <sheet>
@@ -14835,7 +14835,6 @@ Source: http://www.fairchildsemi.com/ds/FD/FDN360P.pdf</description>
 </instance>
 <instance part="R12" gate="G$1" x="332.74" y="40.64" rot="R180"/>
 <instance part="P+9" gate="1" x="347.98" y="60.96"/>
-<instance part="P-5" gate="1" x="248.92" y="22.86"/>
 <instance part="U2" gate="A" x="213.36" y="-63.5"/>
 <instance part="P-6" gate="1" x="175.26" y="-81.28"/>
 <instance part="P+11" gate="1" x="175.26" y="-43.18"/>
@@ -14876,6 +14875,7 @@ Source: http://www.fairchildsemi.com/ds/FD/FDN360P.pdf</description>
 <instance part="R15" gate="G$1" x="332.74" y="5.08" rot="R180"/>
 <instance part="R16" gate="G$1" x="340.36" y="12.7" rot="R90"/>
 <instance part="Q2" gate="G$1" x="345.44" y="2.54"/>
+<instance part="P-5" gate="1" x="248.92" y="-12.7"/>
 </instances>
 <busses>
 </busses>
@@ -15099,6 +15099,10 @@ Source: http://www.fairchildsemi.com/ds/FD/FDN360P.pdf</description>
 <junction x="241.3" y="38.1"/>
 <wire x1="248.92" y1="38.1" x2="248.92" y2="35.56" width="0.1524" layer="91"/>
 <pinref part="C2" gate="G$1" pin="1"/>
+<pinref part="U1" gate="A" pin="GP1"/>
+<wire x1="238.76" y1="5.08" x2="241.3" y2="5.08" width="0.1524" layer="91"/>
+<wire x1="241.3" y1="5.08" x2="241.3" y2="22.86" width="0.1524" layer="91"/>
+<junction x="241.3" y="22.86"/>
 </segment>
 <segment>
 <pinref part="P+9" gate="1" pin="V+"/>
@@ -15185,11 +15189,6 @@ Source: http://www.fairchildsemi.com/ds/FD/FDN360P.pdf</description>
 <pinref part="P-4" gate="1" pin="V-"/>
 </segment>
 <segment>
-<pinref part="P-5" gate="1" pin="V-"/>
-<wire x1="248.92" y1="27.94" x2="248.92" y2="25.4" width="0.1524" layer="91"/>
-<pinref part="C2" gate="G$1" pin="2"/>
-</segment>
-<segment>
 <pinref part="U2" gate="A" pin="VSS"/>
 <wire x1="195.58" y1="-73.66" x2="175.26" y2="-73.66" width="0.1524" layer="91"/>
 <wire x1="175.26" y1="-73.66" x2="175.26" y2="-71.12" width="0.1524" layer="91"/>
@@ -15223,6 +15222,19 @@ Source: http://www.fairchildsemi.com/ds/FD/FDN360P.pdf</description>
 <pinref part="C1" gate="G$1" pin="1"/>
 <wire x1="248.92" y1="-73.66" x2="248.92" y2="-76.2" width="0.1524" layer="91"/>
 <pinref part="P-10" gate="1" pin="V-"/>
+</segment>
+<segment>
+<pinref part="C2" gate="G$1" pin="2"/>
+<pinref part="U1" gate="A" pin="GP6"/>
+<wire x1="238.76" y1="17.78" x2="248.92" y2="17.78" width="0.1524" layer="91"/>
+<wire x1="248.92" y1="17.78" x2="248.92" y2="15.24" width="0.1524" layer="91"/>
+<pinref part="U1" gate="A" pin="GP5"/>
+<wire x1="248.92" y1="15.24" x2="238.76" y2="15.24" width="0.1524" layer="91"/>
+<wire x1="248.92" y1="15.24" x2="248.92" y2="-10.16" width="0.1524" layer="91"/>
+<junction x="248.92" y="15.24"/>
+<wire x1="248.92" y1="27.94" x2="248.92" y2="17.78" width="0.1524" layer="91"/>
+<junction x="248.92" y="17.78"/>
+<pinref part="P-5" gate="1" pin="V-"/>
 </segment>
 </net>
 <net name="N$4" class="0">
@@ -15470,14 +15482,14 @@ Source: http://www.fairchildsemi.com/ds/FD/FDN360P.pdf</description>
 </net>
 <net name="LOWSIDEONOFF_A" class="0">
 <segment>
-<pinref part="U1" gate="A" pin="GP1"/>
-<wire x1="238.76" y1="5.08" x2="269.24" y2="5.08" width="0.1524" layer="91"/>
-<label x="254" y="5.08" size="1.778" layer="95"/>
-</segment>
-<segment>
 <wire x1="302.26" y1="-22.86" x2="327.66" y2="-22.86" width="0.1524" layer="91"/>
 <label x="302.26" y="-22.86" size="1.778" layer="95"/>
 <pinref part="R11" gate="G$1" pin="1"/>
+</segment>
+<segment>
+<pinref part="U1" gate="A" pin="GP7"/>
+<wire x1="238.76" y1="20.32" x2="269.24" y2="20.32" width="0.1524" layer="91"/>
+<label x="254" y="20.32" size="1.778" layer="95"/>
 </segment>
 </net>
 </nets>
