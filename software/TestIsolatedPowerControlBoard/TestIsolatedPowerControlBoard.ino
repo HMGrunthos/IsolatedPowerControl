@@ -64,7 +64,7 @@ void setup() {
     Wire.write(MCP47X6_CMD_ALL | 0b00100); // This sets zero gain, shut down with 100k to ground and Vref is Vdd by defaul (in EEPROM)
     Wire.write(0b00000000); // Power up value is low rail - shouldn't be used because we start up shut down
     Wire.write(0b00000000); // Power up value is low rail
-  Wire.endTransmission();
+  Wire.endTransmission(true);
 
   Serial.begin(9600);
   Serial.println("Hello world.");
@@ -93,7 +93,7 @@ void loop() {
     Serial.print("GPIO Val :");
     Serial.println(gpioVal, BIN);
 */
-    
+
     // Serial.println("Sending LED state");
     Wire.beginTransmission(MCP23008ADDR);
       Wire.write(OLAT);
@@ -107,6 +107,7 @@ void loop() {
         digitalWrite(13, HIGH);
       }
     Wire.endTransmission(true);
+
   } else {
     // Set the volatile DAC value
     uint16_t dacVal = loopCnt<<0;
