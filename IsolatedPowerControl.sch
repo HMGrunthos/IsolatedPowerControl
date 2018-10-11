@@ -14729,7 +14729,7 @@ Source: http://www.fairchildsemi.com/ds/FD/FDN360P.pdf</description>
     - Of white and black, black is -ve
  - Signals
     - Of red and black, black is SCL
-    - Of white and black, black is SDA</text>
+    - Of white and black, white is SDA</text>
 </plain>
 <instances>
 <instance part="U$1" gate="G$1" x="17.78" y="5.08"/>
