@@ -78,9 +78,6 @@ static struct CookerState {
 void initialiseCookerIO();
 
 void setup() {
-  Serial.begin(9600);
-  Serial.println("Temperature controller.");
-
   max32865[0].begin(MAX31865_3WIRE);  // set to 2WIRE or 4WIRE as necessary
   max32865[1].begin(MAX31865_3WIRE);  // set to 2WIRE or 4WIRE as necessary
 
@@ -89,30 +86,51 @@ void setup() {
   Wire.begin();
   
   vfd.brightness = 3; // valid brightness values are 0 through 15
+
+  Serial.begin(115200);
+  Serial.println("Temperature controller.");
 }
 
 void loop() {
   static uint_fast8_t selRTD = 0;
   static uint_fast32_t nextStatusUpdate = millis() + 1000;
+  static uint_fast32_t nextTempReading = millis() + 1000;
 
-  for(uint_fast8_t rtdIdx = 0; rtdIdx < 1; rtdIdx++) {
-    struct RTDReading rtdValue = getRTDTemperature(max32865 + rtdIdx);
+  static float currentTemp[2] = {-INFINITY, -INFINITY};
 
-    if(rtdIdx == selRTD) {
-      char pString[12];
-      if(rtdValue.fault == 0) {
-        // Serial.print("Temperature = "); Serial.println(rtdValue.temp);
-        sprintf(pString, "Temp%i %6.2f", rtdIdx+1, rtdValue.temp);
-        vfd.sendMessage(pString, 12); // send a message, 12 characters long
+  if(nextTempReading < millis()) {
+    nextTempReading += 400;
+    
+    for(uint_fast8_t rtdIdx = 0; rtdIdx < 2; rtdIdx++) {
+      struct RTDReading rtdValue = getRTDTemperature(max32865 + 0); // Only support one channel to begin with
+
+      if(currentTemp[rtdIdx] == -INFINITY) {
+        currentTemp[rtdIdx] = rtdValue.temp;
       } else {
-        sprintf(pString, "Temp%i  fault", rtdIdx+1, rtdValue.temp);
-        vfd.sendMessage(pString, 12);
+        if(rtdValue.fault) {
+          currentTemp[rtdIdx] = -INFINITY; // If we get an error from the temperature probe then restart the filter
+        } else {
+          const float alpha = 0.81597; // 3dB at about 1Hz at a loop rate of 400ms
+          currentTemp[rtdIdx] = alpha*rtdValue.temp + (1 - alpha)*currentTemp[rtdIdx];
+        }
+      }
+          
+      if(rtdIdx == selRTD) {
+        char pString[12];
+        if(rtdValue.fault == 0) {
+          // Serial.print("Temperature = "); Serial.println(currentTemp[rtdIdx]);
+          sprintf(pString, "Temp%i %6.2f", rtdIdx+1, currentTemp[rtdIdx]);
+          vfd.sendMessage(pString, 12); // send a message, 12 characters long
+        } else {
+          sprintf(pString, "Temp%i  fault", rtdIdx+1, rtdValue.temp);
+          vfd.sendMessage(pString, 12);
+        }
       }
     }
   }
 
   checkSerialCommands(&nextStatusUpdate);
-  updateCookerState(&nextStatusUpdate);
+  updateCookerState(&nextStatusUpdate, currentTemp);
 }
 
 void checkSerialCommands(uint_fast32_t *nextStatusUpdate)
@@ -144,13 +162,18 @@ void checkSerialCommands(uint_fast32_t *nextStatusUpdate)
   }
 }
 
-void updateCookerState(uint_fast32_t *nextStatusUpdate)
+void updateCookerState(uint_fast32_t *nextStatusUpdate, float *currentTemps)
 {
+  /*
+  static uint_fast32_t loopStart = millis();
+  static uint_fast32_t loopCount = 0;
+  loopCount++;
+  */
+
   if(cookerStatus.isConnected) {
     if(cookerStatus.nextcommandTime < millis()) {
       cookerStatus.nextcommandTime = millis() + 200;
 
-      // Serial.println("Commanding.");
       setPowerLevel(cookerStatus.powerLevel);
       if(cookerStatus.isOn) {
         poweredOn();
@@ -174,6 +197,14 @@ void updateCookerState(uint_fast32_t *nextStatusUpdate)
     }
     Serial.print("Current power level :");
     Serial.print(cookerStatus.powerLevel);
+    Serial.print(": Temp0:");
+    Serial.print(currentTemps[0]);
+    Serial.print(": Temp1:");
+    Serial.print(currentTemps[1]);
+    Serial.print(": Time:");
+    Serial.print(millis()/(float)1000);
+    // Serial.print(": Loop period:");
+    // Serial.print((millis() - loopStart) / (float)loopCount);
     Serial.println(":");
 
     #ifdef DEBUGSTATE
