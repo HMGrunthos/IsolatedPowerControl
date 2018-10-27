@@ -58,6 +58,8 @@ Adafruit_MAX31865 max32865[2] = {Adafruit_MAX31865(PA4), Adafruit_MAX31865(PA8)}
 #define MCP4716_FULLSCALE (0x3FF)
 #define MCP4716_DEFAULTCFG (0b00100)
 
+#define POWERHYST 5
+
 // #define DEBUGSTARTUP
 // #define DEBUGSTATE
 
@@ -65,9 +67,16 @@ TwoWire secondI2CPort(2);
 
 Vfd vfd(0);  //create new Vfd instance with display address 7
 
-struct RTDReading {
+struct RTDMeasurement {
   float temp;
   uint8_t fault;
+};
+
+struct RTDEstimate {
+  float xMeas;
+  float xEst;
+  float vEst;
+  bool ready;
 };
 
 static struct CookerState {
@@ -78,13 +87,15 @@ static struct CookerState {
   uint_fast32_t controlTimeout;
 } cookerStatus = {.ioLatchState = BUFFEROFF | POWEROFF, .isOn = false, .isConnected = false, .powerLevel = 0, .controlTimeout = 0};
 
-static double measuredTemp = -INFINITY;
+static double measuredTemp = 15;
 static double outputDrive = 0;
 static double targetTemp = 55;
 
 //Specify the links and initial tuning parameters
-static PID myPID(&measuredTemp, &outputDrive, &targetTemp, 80, 2, 50, P_ON_M, DIRECT); // P_ON_M specifies that Proportional on Measurement be used
+static PID myPID(&measuredTemp, &outputDrive, &targetTemp, 80, 1.5, 75, P_ON_M, DIRECT); // P_ON_M specifies that Proportional on Measurement be used
                                                                                      // P_ON_E (Proportional on Error) is the default behavior
+
+template<typename T> T SQR(T val) {return val*val;}
 
 void setup() {
   Serial.begin(115200);
@@ -119,6 +130,7 @@ void setup() {
 
   myPID.SetSampleTime(200);
   myPID.SetOutputLimits(0, 1230);
+  myPID.SetMode(MANUAL);
 
   Serial.println("Initialisation complete.");
 }
@@ -126,46 +138,62 @@ void setup() {
 void loop() {
   static uint_fast8_t selRTD = 0;
   static uint_fast32_t nextStatusUpdate = millis() + 1500;
-  static uint_fast32_t nextTempReading = millis() + 500;
 
-  static float currentTemp[2] = {-INFINITY, -INFINITY};
+  static RTDEstimate currentTemps[2] = {{0, 0, 0, false}, {0, 0, 0, false}};
 
-  if(nextTempReading < millis()) {
-    nextTempReading += 15;
-    
-    for(uint_fast8_t rtdIdx = 0; rtdIdx < 1; rtdIdx++) {
-      struct RTDReading rtdValue = getRTDTemperature(max32865 + rtdIdx); // Only support one channel to begin with
+  for(uint_fast8_t rtdIdx = 0; rtdIdx < 1; rtdIdx++) {
+    if(!max32865[rtdIdx].isDataReady()) {
+      continue;
+    }
 
-      if(!rtdValue.fault) {
-        if(currentTemp[rtdIdx] == -INFINITY) {
-          currentTemp[rtdIdx] = rtdValue.temp;
+    struct RTDMeasurement rtdValue = getRTDTemperature(max32865 + rtdIdx);
 
-          if(rtdIdx == selRTD) {
-            myPID.SetMode(AUTOMATIC);
-          }
-        } else {
-          const float alpha = 0.117394; // 3dB at about 1Hz at a sample rate of 50.25Hz
-          currentTemp[rtdIdx] = alpha*rtdValue.temp + (1 - alpha)*currentTemp[rtdIdx];
-        }
+    if(!rtdValue.fault) {
+      if(!currentTemps[rtdIdx].ready) {
+        currentTemps[rtdIdx].xMeas = rtdValue.temp;
+        currentTemps[rtdIdx].xEst = rtdValue.temp;
+        currentTemps[rtdIdx].vEst = 0;
+        currentTemps[rtdIdx].ready = true;
+      } else {
+        const float fSample = 50.25;
+        const float dt = 1/fSample;
+        const float sysNoise = 0.3;
+        const float measNoise = 0.3;
+        const float gamma = SQR(sysNoise)/SQR(measNoise) * SQR(dt);
+        const float r = (4 + gamma - sqrt(8*gamma + SQR(gamma)))/4;
+        const float alpha = 1 - SQR(r);
+        const float beta = 2*(2 - alpha) - 4*sqrt(1 - alpha);
+
+        float xPred = currentTemps[rtdIdx].xEst + currentTemps[rtdIdx].vEst * dt;
+        currentTemps[rtdIdx].xMeas = rtdValue.temp;
+        float innov = currentTemps[rtdIdx].xMeas - xPred;
+        currentTemps[rtdIdx].xEst = xPred + alpha*innov;
+        currentTemps[rtdIdx].vEst += beta*innov / dt;
+
+        // const float alpha = 0.117394; // 3dB at about 1Hz at a sample rate of 50.25Hz
+        // currentTemps[rtdIdx] = alpha*rtdValue.temp + (1 - alpha)*currentTemps[rtdIdx];
 
         if(rtdIdx == selRTD) {
-          measuredTemp = currentTemp[rtdIdx];
+          myPID.SetMode(AUTOMATIC);
         }
-      } else {
-        currentTemp[rtdIdx] = -INFINITY; // If we get an error from the temperature probe then restart the filter
+      }
+
+      if(rtdIdx == selRTD) {
+        measuredTemp = currentTemps[rtdIdx].xEst;
+      }
+    } else {
+      currentTemps[rtdIdx].ready = false; // If we get an error from the temperature probe then restart the filter
+      if(rtdIdx == selRTD) {
+        myPID.SetMode(MANUAL);
       }
     }
   }
 
-  bool updatedPID;
-  if(measuredTemp != -INFINITY) {
-    updatedPID = myPID.Compute();
-  } else {
-    updatedPID = true;
-  }
+  bool updatedPID = myPID.Compute();
 
   checkSerialCommands(&nextStatusUpdate);
-  updateCookerState(&nextStatusUpdate, currentTemp, updatedPID);
+  updateCookerState(updatedPID);
+  updateStatusDisplay(&nextStatusUpdate, currentTemps, selRTD);
 }
 
 void checkSerialCommands(uint_fast32_t *nextStatusUpdate)
@@ -197,27 +225,23 @@ void checkSerialCommands(uint_fast32_t *nextStatusUpdate)
   }
 }
 
-void updateCookerState(uint_fast32_t *nextStatusUpdate, float *currentTemps, bool updatedPIDOutput)
+void updateCookerState(bool updatedPIDOutput)
 {
-  /*
-  static uint_fast32_t loopStart = millis();
-  static uint_fast32_t loopCount = 0;
-  loopCount++;
-  */
-
   if(updatedPIDOutput) {
     cookerStatus.controlTimeout = millis() + 1000;
 
     if(cookerStatus.isConnected) {
+      double onLevel = 207;
+      if(!cookerStatus.isOn) {
+        onLevel += POWERHYST;
+      }
       // Turn PID output into a drive signal
-      if(outputDrive >= 207) {
+      if(outputDrive >= onLevel) {
         static uint_fast8_t toggle;
         if(!cookerStatus.isOn) {
           poweredOn();
-          cookerStatus.isOn = true;
         }
-        cookerStatus.powerLevel = outputDrive - 207;
-        setPowerLevel(cookerStatus.powerLevel);
+        setPowerLevel(outputDrive - 207);
         if(toggle++ & 0x1) {
           if(cookerStatus.powerLevel > 816) { // 4 to 5
             vfd.setLEDBits(YELLOW_BIT);
@@ -230,14 +254,12 @@ void updateCookerState(uint_fast32_t *nextStatusUpdate, float *currentTemps, boo
           } else { // 0 to 1
             vfd.setLEDBits(RED_BIT);
           }
-          // cookerStatus.powerLevel = 0;
         } else {
           vfd.setLEDBits(0); // disable all LEDs
         }
       } else {
         if(cookerStatus.isOn) {
           poweredOff();
-          cookerStatus.isOn = false;
         }
         vfd.setLEDBits(RED_BIT);
       }
@@ -246,43 +268,63 @@ void updateCookerState(uint_fast32_t *nextStatusUpdate, float *currentTemps, boo
     }
   } else if(cookerStatus.controlTimeout < millis()) {
     cookerStatus.controlTimeout = millis() + 5000;
-    setPowerLevel(0);
-    cookerStatus.powerLevel = 0;
-    poweredOff();
-    cookerStatus.isOn = false;
+    if(cookerStatus.isConnected) {
+      setPowerLevel(0);
+      poweredOff();
+    }
   }
+}
 
+void updateStatusDisplay(uint_fast32_t *nextStatusUpdate, struct RTDEstimate *currentTemps, uint_fast8_t selRTD)
+{
   if(*nextStatusUpdate < millis()) {
     *nextStatusUpdate = millis() + 1500;
+
     if(cookerStatus.isConnected) {
-      Serial.print("Connected. ");
+      Serial.print("C. ");
     } else {
-      Serial.print("Disconnected. ");
+      Serial.print("D. ");
     }
     if(cookerStatus.isOn) {
-      Serial.print("Power is on. ");
+      Serial.print("P. On. ");
     } else {
-      Serial.print("Power is off. ");
+      Serial.print("P Off. ");
     }
-    Serial.print("Current power level:");
+    Serial.print("Curr level:");
     Serial.print(cookerStatus.powerLevel);
-    Serial.print(": PID output:");
+    Serial.print(": PID:");
     Serial.print(outputDrive);
     Serial.print(": Temp0:");
-    Serial.print(currentTemps[0]);
+    if(currentTemps[0].ready) {
+      Serial.print(currentTemps[0].xEst);
+      Serial.print("(");
+      Serial.print(currentTemps[0].xMeas);
+      Serial.print(")/");
+      Serial.print(currentTemps[0].vEst);
+    } else {
+      Serial.print("FAIL");
+    }
     Serial.print(": Temp1:");
-    Serial.print(currentTemps[1]);
-    Serial.print(": Time:");
+    if(currentTemps[1].ready) {
+      Serial.print(currentTemps[1].xEst);
+      Serial.print("(");
+      Serial.print(currentTemps[1].xMeas);
+      Serial.print(")/");
+      Serial.print(currentTemps[1].vEst);
+    } else {
+      Serial.print("FAIL");
+    }
+    Serial.print(": T:");
     Serial.print(millis()/(float)1000);
     // Serial.print(": Loop period:");
     // Serial.print((millis() - loopStart) / (float)loopCount);
     Serial.println(":");
 
-    if(measuredTemp != -INFINITY) {
+    if(currentTemps[selRTD].ready) {
       char pString[12];
       static char lastString[12] = "";
 
-      sprintf(pString, "Temp%i %6.2f", 1, measuredTemp);
+      sprintf(pString, "Temp%i %6.2f", 1, currentTemps[selRTD].xEst);
 
       uint_fast8_t firstDiff;
       for(firstDiff = 0; (firstDiff < 12) && (pString[firstDiff] == lastString[firstDiff]); firstDiff++);
@@ -310,7 +352,7 @@ void updateCookerState(uint_fast32_t *nextStatusUpdate, float *currentTemps, boo
       Serial.println(gpioVal, BIN);
   
       // Read all the register values in the DAC
-      byte dacRegVals[6];
+      byte dacRegVals[6];++
       secondI2CPort.requestFrom(MCP4716_ADDR, (byte)6);
       for(byte idx = 0; idx < 6; idx++) {
         dacRegVals[idx] = secondI2CPort.read();
@@ -502,60 +544,11 @@ void disconnectRemoteControl()
   cookerStatus.powerLevel = 0;
   cookerStatus.isConnected = false;
 }
-/*
-void cookerPowerUp()
-{
-  if(cookerStatus.isOn) {
-    if(cookerStatus.powerLevel == 1023) {
-      Serial.print("Power limited. ");
-    } else {
-      cookerStatus.powerLevel += 31;
-      Serial.print("Power up. ");
-    }
-  } else {
-    Serial.print("Not on. ");
-  }
-}
 
-void cookerPowerDown()
+void setPowerLevel(uint16_t powerLevel)
 {
-  if(cookerStatus.isOn) {
-    if(cookerStatus.powerLevel == 0) {
-      Serial.print("Power limited. ");
-    } else {
-      cookerStatus.powerLevel -= 31;
-      Serial.print("Power down. ");
-    }
-  } else {
-    Serial.print("Not on. ");
-  }
-}
-
-void cookerTurnOn()
-{
-  if(!cookerStatus.isOn) {
-    Serial.print("Turning on. ");
-    cookerStatus.isOn = true;
-    cookerStatus.powerLevel = 0;
-  } else {
-    // Serial.print("Already on. ");
-  }
-}
-
-void cookerTurnOff()
-{
-  if(cookerStatus.isOn) {
-    Serial.print("Turning off. ");
-    cookerStatus.isOn = false;
-    cookerStatus.powerLevel = 0;
-  } else {
-    // Serial.print("Already off. ");
-  }
-}
-*/
-void setPowerLevel(uint16_t dacVal)
-{
-  dacVal = MCP4716_FULLSCALE - dacVal;
+  cookerStatus.powerLevel = powerLevel;
+  uint16_t dacVal = MCP4716_FULLSCALE - powerLevel;
   secondI2CPort.beginTransmission(MCP4716_ADDR);
     secondI2CPort.write(MCP47X6_CMD_VOLDAC | ((byte)(dacVal >> 6) & 0x0F)); // Since this writes the PD0 and PD1 bits it wakes the DAC back up from a sleeping state
     secondI2CPort.write((byte)((dacVal << 2) & 0xFC));
@@ -570,6 +563,7 @@ void poweredOn()
     secondI2CPort.write(OLAT);
     secondI2CPort.write(cookerStatus.ioLatchState);
   secondI2CPort.endTransmission(true);
+  cookerStatus.isOn = true;
 }
 
 void poweredOff()
@@ -580,11 +574,12 @@ void poweredOff()
     secondI2CPort.write(OLAT);
     secondI2CPort.write(cookerStatus.ioLatchState);
   secondI2CPort.endTransmission(true);
+  cookerStatus.isOn = false;
 }
 
-struct RTDReading getRTDTemperature(Adafruit_MAX31865 *max31865Channel)
+struct RTDMeasurement getRTDTemperature(Adafruit_MAX31865 *max31865Channel)
 {
-  struct RTDReading rtdValue;
+  struct RTDMeasurement rtdValue;
 
   // uint16_t rtd = max31865Channel->readRTD();
   // float ratio = rtd / (float)32768;
