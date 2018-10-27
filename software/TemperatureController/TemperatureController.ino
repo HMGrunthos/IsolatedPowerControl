@@ -126,6 +126,8 @@ void setup() {
 
   i2c_set_clk_control(I2C1, 450); // Ser VFD I2C frequency to 10kHz
   i2c_set_trise(I2C1, 0);
+  gpio_set_modef(GPIOB, 6, GPIO_OUTPUT_OD, GPIO_MODEF_SPEED_LOW);
+  gpio_set_modef(GPIOB, 7, GPIO_OUTPUT_OD, GPIO_MODEF_SPEED_LOW);
 
   Serial.println("Started VFD I2C port.");
   
@@ -407,9 +409,8 @@ void initialiseCookerIO()
 
   i2c_set_clk_control(I2C2, 3600);
   i2c_set_trise(I2C2, 63);
-
-  //gpio_set_mode(GPIOB, 11, GPIO_AF_OUTPUT_PP);
-  //gpio_set_mode(GPIOB, 10, GPIO_AF_OUTPUT_PP);
+  gpio_set_modef(GPIOB, 11, GPIO_OUTPUT_OD, GPIO_MODEF_SPEED_LOW);
+  gpio_set_modef(GPIOB, 10, GPIO_OUTPUT_OD, GPIO_MODEF_SPEED_LOW);
 
   #ifdef DEBUGSTARTUP
     byte regVals[11];
