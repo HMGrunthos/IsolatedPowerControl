@@ -2,7 +2,7 @@
 
 #include <Wire.h>
 #include <PID_v1.h>
-
+#include <RingBuffer.h>
 #include <Adafruit_MAX31865.h>
 #include <M12BY02AA.h>
 
@@ -10,6 +10,7 @@
 // Adafruit_MAX31865 max = Adafruit_MAX31865(10, 11, 12, 13);
 // use hardware SPI, just pass in the CS pin
 Adafruit_MAX31865 max32865[2] = {Adafruit_MAX31865(PA4), Adafruit_MAX31865(PA8)};
+RingBuffer<uint16_t, 16> maxRTDReadings[2];
 
 // The value of the Rref resistor. Use 430.0 for PT100 and 4300.0 for PT1000
 //#define RREF      430.0
@@ -103,12 +104,17 @@ void setup() {
   
   max32865[0].begin(MAX31865_3WIRE, PA3);  // set to 2WIRE or 4WIRE as necessary
   // max32865[1].begin(MAX31865_3WIRE);  // set to 2WIRE or 4WIRE as necessary
-
+  
   max32865[0].setWires(MAX31865_3WIRE);
   max32865[0].enableBias(true);
   max32865[0].autoConvert(true);
   max32865[0].setFilterFreq(50);
   max32865[0].clearFault();
+
+  max32865[0].readRTDReg();
+  max32865[0].readRTDReg(); // Reading two samples will ensure that we're syncronised with the automatic conversions
+  // We are now assured that we'll see a negative going edge on PA3
+  attachInterrupt(digitalPinToInterrupt(PA3), maxConversion0, FALLING);
 
   Serial.println("Started temperature sensors.");
 
@@ -141,12 +147,28 @@ void loop() {
 
   static RTDEstimate currentTemps[2] = {{0, 0, 0, false}, {0, 0, 0, false}};
 
-  for(uint_fast8_t rtdIdx = 0; rtdIdx < 1; rtdIdx++) {
-    if(!max32865[rtdIdx].isDataReady()) {
-      continue;
+  bool newReading;
+  noInterrupts();
+    newReading = !maxRTDReadings[0].isEmpty();
+  interrupts();
+
+  if(newReading) {
+    uint_fast8_t rtdIdx = 0;
+
+    uint16_t regVal;
+    maxRTDReadings[rtdIdx].lockedPop(regVal);
+
+    uint8_t faultVal;
+    if(regVal & 0x0001) { // There's a fault
+      noInterrupts();
+        faultVal = max32865[rtdIdx].readFault(); // Get the vaule of the fault register
+        max32865[rtdIdx].clearFault(); // And then clear it
+      interrupts();
+    } else {
+      faultVal = 0;
     }
 
-    struct RTDMeasurement rtdValue = getRTDTemperature(max32865 + rtdIdx);
+    struct RTDMeasurement rtdValue = getRTDTemperature(regVal >> 1, faultVal); // The right shift throws away the fault bit
 
     if(!rtdValue.fault) {
       if(!currentTemps[rtdIdx].ready) {
@@ -181,7 +203,7 @@ void loop() {
       if(rtdIdx == selRTD) {
         measuredTemp = currentTemps[rtdIdx].xEst;
       }
-    } else {
+    } else { // There is a fault
       currentTemps[rtdIdx].ready = false; // If we get an error from the temperature probe then restart the filter
       if(rtdIdx == selRTD) {
         myPID.SetMode(MANUAL);
@@ -189,10 +211,8 @@ void loop() {
     }
   }
 
-  bool updatedPID = myPID.Compute();
-
   checkSerialCommands(&nextStatusUpdate);
-  updateCookerState(updatedPID);
+  updateCookerState();
   updateStatusDisplay(&nextStatusUpdate, currentTemps, selRTD);
 }
 
@@ -225,9 +245,11 @@ void checkSerialCommands(uint_fast32_t *nextStatusUpdate)
   }
 }
 
-void updateCookerState(bool updatedPIDOutput)
-{
-  if(updatedPIDOutput) {
+void updateCookerState()
+{  
+  bool updatedPID = myPID.Compute();
+
+  if(updatedPID) {
     cookerStatus.controlTimeout = millis() + 1000;
 
     if(cookerStatus.isConnected) {
@@ -366,6 +388,12 @@ void updateStatusDisplay(uint_fast32_t *nextStatusUpdate, struct RTDEstimate *cu
       Serial.println();
     #endif // DEBUGSTATE
   }
+}
+
+void maxConversion0()
+{
+  uint16_t rtdVal = max32865[0].readRTDReg();
+  maxRTDReadings[0].push(rtdVal);
 }
 
 void initialiseCookerIO()
@@ -577,17 +605,14 @@ void poweredOff()
   cookerStatus.isOn = false;
 }
 
-struct RTDMeasurement getRTDTemperature(Adafruit_MAX31865 *max31865Channel)
+struct RTDMeasurement getRTDTemperature(uint16_t rtdReg, uint8_t fault)
 {
   struct RTDMeasurement rtdValue;
 
-  // uint16_t rtd = max31865Channel->readRTD();
-  // float ratio = rtd / (float)32768;
-  // rtdValue.temp = max31865Channel->temperature(RNOMINAL, RREF);
-  rtdValue.temp = max31865Channel->temperature(max31865Channel->readRTDReg(), RNOMINAL, RREF);
+  rtdValue.temp = Adafruit_MAX31865::temperature(rtdReg, RNOMINAL, RREF);
 
-  // Check and print any faults
-  rtdValue.fault = 0;//max31865Channel->readFault();
+  // Decode and print any faults
+  rtdValue.fault = fault;
   if (rtdValue.fault) {
     Serial.print("\tFault 0x"); Serial.println(rtdValue.fault, HEX);
     if (rtdValue.fault & MAX31865_FAULT_HIGHTHRESH) {
@@ -608,7 +633,6 @@ struct RTDMeasurement getRTDTemperature(Adafruit_MAX31865 *max31865Channel)
     if (rtdValue.fault & MAX31865_FAULT_OVUV) {
       Serial.println("\tUnder/Over voltage"); 
     }
-    max31865Channel->clearFault();
   }
 
   return rtdValue;
