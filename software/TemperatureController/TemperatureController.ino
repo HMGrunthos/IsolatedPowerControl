@@ -93,7 +93,7 @@ static double outputDrive = 0;
 static double targetTemp = 55;
 
 //Specify the links and initial tuning parameters
-static PID myPID(&measuredTemp, &outputDrive, &targetTemp, 80, 1.5, 75, P_ON_M, DIRECT); // P_ON_M specifies that Proportional on Measurement be used
+static PID myPID(&measuredTemp, &outputDrive, &targetTemp, 80, 1.5, 90, P_ON_M, DIRECT); // P_ON_M specifies that Proportional on Measurement be used
                                                                                      // P_ON_E (Proportional on Error) is the default behavior
 
 template<typename T> T SQR(T val) {return val*val;}
@@ -125,9 +125,9 @@ void setup() {
   Wire.begin();
 
   i2c_set_clk_control(I2C1, 450); // Ser VFD I2C frequency to 10kHz
-  i2c_set_trise(I2C1, 0);
-  gpio_set_modef(GPIOB, 6, GPIO_OUTPUT_OD, GPIO_MODEF_SPEED_LOW);
-  gpio_set_modef(GPIOB, 7, GPIO_OUTPUT_OD, GPIO_MODEF_SPEED_LOW);
+  i2c_set_trise(I2C1, 63);
+  //gpio_set_mode(GPIOB, 6, (gpio_pin_mode)(GPIO_CR_CNF_AF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_2MHZ));
+  //gpio_set_mode(GPIOB, 7, (gpio_pin_mode)(GPIO_CR_CNF_AF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_2MHZ));
 
   Serial.println("Started VFD I2C port.");
   
@@ -262,10 +262,13 @@ void updateCookerState()
       // Turn PID output into a drive signal
       if(outputDrive >= onLevel) {
         static uint_fast8_t toggle;
+        // Serial.print("CFGCKST");
         if(!cookerStatus.isOn) {
           poweredOn();
         }
+        // poweredOff();
         setPowerLevel(outputDrive - 207);
+        // Serial.println("end");
         if(toggle++ & 0x1) {
           if(cookerStatus.powerLevel > 816) { // 4 to 5
             vfd.setLEDBits(YELLOW_BIT);
@@ -354,7 +357,9 @@ void updateStatusDisplay(uint_fast32_t *nextStatusUpdate, struct RTDEstimate *cu
       for(firstDiff = 0; (firstDiff < 12) && (pString[firstDiff] == lastString[firstDiff]); firstDiff++);
 
       if(firstDiff != 12) {
+        // Serial.print("CFGVFD");
         vfd.sendMessage(pString + firstDiff, firstDiff, 12-firstDiff); // send a message, 12 characters long
+        // Serial.println("end");
       }
       
       strcpy(lastString, pString);
@@ -404,13 +409,40 @@ void initialiseCookerIO()
   cookerStatus.isOn = false;
   cookerStatus.isConnected = false;
   cookerStatus.powerLevel = 0;
-  
+
+  // gpio_set_mode(GPIOB, 11, (gpio_pin_mode)(GPIO_CR_CNF_AF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_2MHZ));
+  // gpio_set_mode(GPIOB, 10, (gpio_pin_mode)(GPIO_CR_CNF_AF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_2MHZ));
+
+  // Serial.println(gpio_get_mode(GPIOB, 11), BIN);
+
   secondI2CPort.begin();
+
+  // Serial.println(gpio_get_mode(GPIOB, 11), BIN);
 
   i2c_set_clk_control(I2C2, 3600);
   i2c_set_trise(I2C2, 63);
-  gpio_set_modef(GPIOB, 11, GPIO_OUTPUT_OD, GPIO_MODEF_SPEED_LOW);
-  gpio_set_modef(GPIOB, 10, GPIO_OUTPUT_OD, GPIO_MODEF_SPEED_LOW);
+  // gpio_set_mode(GPIOB, 11, (gpio_pin_mode)(GPIO_CR_CNF_AF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_2MHZ));
+  // gpio_set_mode(GPIOB, 10, (gpio_pin_mode)(GPIO_CR_CNF_AF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_2MHZ));
+
+  // Serial.println(gpio_get_mode(GPIOB, 11), BIN);
+/*
+  for(;;) {
+    secondI2CPort.beginTransmission(MCP23008_ADDR);
+      secondI2CPort.write(0);
+    secondI2CPort.endTransmission(true); // At lower clock rates the receiver doesn't like a repeated start here
+  }
+
+  pinMode(PB11, OUTPUT);
+  pinMode(PB10, OUTPUT);
+  gpio_set_mode(GPIOB, 11, (gpio_pin_mode)(GPIO_CR_CNF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_50MHZ)); // At 50MHz fall time is 2.95ns, at 10MHz 4.4ns, at 2MHz 6.15ns
+  gpio_set_mode(GPIOB, 10, (gpio_pin_mode)(GPIO_CR_CNF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_50MHZ));
+  for(;;) {
+    digitalWrite(PB11, 1);
+    digitalWrite(PB10, 1);
+    digitalWrite(PB11, 0);
+    digitalWrite(PB10, 0);
+  }
+*/
 
   #ifdef DEBUGSTARTUP
     byte regVals[11];
