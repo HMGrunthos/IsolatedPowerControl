@@ -148,7 +148,7 @@ void setup() {
 
   Serial.println("Initialisation complete.");
 
-  iwdg_init(IWDG_PRE_16, 250); // 1250
+  iwdg_init(IWDG_PRE_16, 250); // Timeout after 100ms
   iwdg_feed();
 }
 
@@ -276,17 +276,14 @@ void updateCookerState()
         static uint_fast8_t toggle;
         Serial.print("CFGCKST");
         if(!cookerStatus.isOn) {
-          poweredOn();
+          // poweredOn();
         }
-        setPowerLevel(outputDrive - 207);
-        //iwdg_init(IWDG_PRE_4, 600);
+        // setPowerLevel(outputDrive - 207);
         iwdg_feed();
-        //poweredOff();
-        //setPowerLevel(0);
+        poweredOff();
+        setPowerLevel(0);
         iwdg_feed();
         Serial.println("end");
-        //iwdg_init(IWDG_PRE_16, 1250);
-        //iwdg_feed();
         if(toggle++ & 0x1) {
           if(cookerStatus.powerLevel > 816) { // 4 to 5
             vfd.setLEDBits(YELLOW_BIT);
