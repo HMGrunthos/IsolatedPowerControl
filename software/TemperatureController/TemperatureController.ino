@@ -1,3 +1,5 @@
+#include <libmaple/iwdg.h>
+
 #include <string.h>
 
 #include <Wire.h>
@@ -99,6 +101,11 @@ static PID myPID(&measuredTemp, &outputDrive, &targetTemp, 80, 1.5, 90, P_ON_M, 
 template<typename T> T SQR(T val) {return val*val;}
 
 void setup() {
+  pinMode(PA2, OUTPUT);
+  digitalWrite(PA2, 0);
+  digitalWrite(PA2, 1);
+  digitalWrite(PA2, 0);
+  
   Serial.begin(115200);
   Serial.println("Temperature controller.");
   
@@ -123,9 +130,8 @@ void setup() {
   Serial.println("Started cooker control.");
   
   Wire.begin();
-
-  i2c_set_clk_control(I2C1, 450); // Ser VFD I2C frequency to 10kHz
-  i2c_set_trise(I2C1, 63);
+  setVFDI2CClock();
+  
   //gpio_set_mode(GPIOB, 6, (gpio_pin_mode)(GPIO_CR_CNF_AF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_2MHZ));
   //gpio_set_mode(GPIOB, 7, (gpio_pin_mode)(GPIO_CR_CNF_AF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_2MHZ));
 
@@ -136,11 +142,14 @@ void setup() {
   vfd.clear();
   vfd.setLEDBits((~RED_BIT) & (~YELLOW_BIT) & ~(GREEN_BIT));
 
-  myPID.SetSampleTime(200);
+  myPID.SetSampleTime(400);
   myPID.SetOutputLimits(0, 1230);
   myPID.SetMode(MANUAL);
 
   Serial.println("Initialisation complete.");
+
+  iwdg_init(IWDG_PRE_16, 250); // 1250
+  iwdg_feed();
 }
 
 void loop() {
@@ -213,9 +222,12 @@ void loop() {
     }
   }
 
+measuredTemp = 20;
   checkSerialCommands(&nextStatusUpdate);
   updateCookerState();
   updateStatusDisplay(&nextStatusUpdate, currentTemps, selRTD);
+
+  iwdg_feed();
 }
 
 void checkSerialCommands(uint_fast32_t *nextStatusUpdate)
@@ -262,13 +274,19 @@ void updateCookerState()
       // Turn PID output into a drive signal
       if(outputDrive >= onLevel) {
         static uint_fast8_t toggle;
-        // Serial.print("CFGCKST");
+        Serial.print("CFGCKST");
         if(!cookerStatus.isOn) {
           poweredOn();
         }
-        // poweredOff();
         setPowerLevel(outputDrive - 207);
-        // Serial.println("end");
+        //iwdg_init(IWDG_PRE_4, 600);
+        iwdg_feed();
+        //poweredOff();
+        //setPowerLevel(0);
+        iwdg_feed();
+        Serial.println("end");
+        //iwdg_init(IWDG_PRE_16, 1250);
+        //iwdg_feed();
         if(toggle++ & 0x1) {
           if(cookerStatus.powerLevel > 816) { // 4 to 5
             vfd.setLEDBits(YELLOW_BIT);
@@ -403,8 +421,22 @@ void maxConversion0()
   maxRTDReadings[0].push(rtdVal);
 }
 
+void setVFDI2CClock()
+{
+  i2c_set_clk_control(I2C1, 450); // Set VFD I2C frequency to 10kHz
+  i2c_set_trise(I2C1, 63);
+}
+
+void setCookerI2CClock()
+{
+  i2c_set_clk_control(I2C2, 3600);
+  i2c_set_trise(I2C2, 63);
+}
+
 void initialiseCookerIO()
 {
+  byte rVal;
+
   cookerStatus.ioLatchState = BUFFEROFF | POWEROFF;
   cookerStatus.isOn = false;
   cookerStatus.isConnected = false;
@@ -416,11 +448,9 @@ void initialiseCookerIO()
   // Serial.println(gpio_get_mode(GPIOB, 11), BIN);
 
   secondI2CPort.begin();
-
+  setCookerI2CClock();
   // Serial.println(gpio_get_mode(GPIOB, 11), BIN);
 
-  i2c_set_clk_control(I2C2, 3600);
-  i2c_set_trise(I2C2, 63);
   // gpio_set_mode(GPIOB, 11, (gpio_pin_mode)(GPIO_CR_CNF_AF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_2MHZ));
   // gpio_set_mode(GPIOB, 10, (gpio_pin_mode)(GPIO_CR_CNF_AF_OUTPUT_OD | GPIO_CR_MODE_OUTPUT_2MHZ));
 
@@ -482,19 +512,28 @@ void initialiseCookerIO()
   secondI2CPort.beginTransmission(MCP23008_ADDR);
     secondI2CPort.write(GPPU);
     secondI2CPort.write(0b00001100);
-  secondI2CPort.endTransmission(true);
-
+  rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+  }
+  
   // Set the latch bits to turn the high side switch off and keep the buffer disabled
   cookerStatus.ioLatchState = BUFFEROFF | POWEROFF;
   secondI2CPort.beginTransmission(MCP23008_ADDR);
     secondI2CPort.write(OLAT);
     secondI2CPort.write(cookerStatus.ioLatchState);
-  secondI2CPort.endTransmission(true);
-
+  rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+  }
+  
   secondI2CPort.beginTransmission(MCP23008_ADDR);
     secondI2CPort.write(IODIR);
     secondI2CPort.write(0b11101110); // Drive the buffer signal and LED (high side switch)
-  secondI2CPort.endTransmission(true);
+  rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+  }
 
 /*
   // Initialise the DAC EEPROM - only need to do this once per board
@@ -509,7 +548,10 @@ void initialiseCookerIO()
   // Initialise the DAC - Make sure it's disabled
   secondI2CPort.beginTransmission(MCP4716_ADDR);
     secondI2CPort.write(MCP47X6_CMD_VOLCONFIG | MCP4716_DEFAULTCFG); // This sets zero gain, shut down with 100k to ground and Vref is Vdd by default
-  secondI2CPort.endTransmission(true);
+  rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+  }
 
   #ifdef DEBUGSTARTUP
     Serial.println("Post initialise...");
@@ -546,6 +588,8 @@ void initialiseCookerIO()
 
 void connectRemoteControl()
 {
+  byte rVal;
+
   if(!cookerStatus.isConnected) {
     Serial.println("Connecting..");
   } else {
@@ -556,14 +600,20 @@ void connectRemoteControl()
   secondI2CPort.beginTransmission(MCP4716_ADDR);
     secondI2CPort.write(MCP47X6_CMD_VOLDAC | ((byte)(MCP4716_FULLSCALE >> 6) & 0x0F)); // Since this writes the PD0 and PD1 bits it wakes the DAC back up from a sleeping state with an initial full scale output equivalent to 500W control setting
     secondI2CPort.write((byte)((MCP4716_FULLSCALE << 2) & 0xFC));
-  secondI2CPort.endTransmission(true);
+  rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+  }
 
   // Set the latch bits to power up the opamp thus driving the power level but keep the cooker off
   cookerStatus.ioLatchState = ~BUFFEROFF | POWEROFF;
   secondI2CPort.beginTransmission(MCP23008_ADDR);
     secondI2CPort.write(OLAT);
     secondI2CPort.write(cookerStatus.ioLatchState);
-  secondI2CPort.endTransmission(true);
+  rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+  }
 
   cookerStatus.isOn = false;
   cookerStatus.powerLevel = 0;
@@ -572,6 +622,8 @@ void connectRemoteControl()
 
 void disconnectRemoteControl()
 {
+  byte rVal;
+
   if(cookerStatus.isConnected) {
     Serial.print("Disconnecting. ");
   } else {
@@ -584,12 +636,18 @@ void disconnectRemoteControl()
   secondI2CPort.beginTransmission(MCP23008_ADDR);
     secondI2CPort.write(OLAT);
     secondI2CPort.write(cookerStatus.ioLatchState);
-  secondI2CPort.endTransmission(true);
+  rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+  }
 
   // Turn off the DAC
   secondI2CPort.beginTransmission(MCP4716_ADDR);
     secondI2CPort.write(MCP47X6_CMD_VOLCONFIG | MCP4716_DEFAULTCFG); // This sets zero gain, shut down with 100k to ground and Vref is Vdd by default (in EEPROM)
-  secondI2CPort.endTransmission(true);
+  rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+  }
 
   // Wait a bit for the unit to notice that the power level may have changed
   delay(250);
@@ -599,7 +657,10 @@ void disconnectRemoteControl()
   secondI2CPort.beginTransmission(MCP23008_ADDR);
     secondI2CPort.write(OLAT);
     secondI2CPort.write(cookerStatus.ioLatchState);
-  secondI2CPort.endTransmission(true);
+  rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+  }
 
   cookerStatus.isOn = false;
   cookerStatus.powerLevel = 0;
@@ -613,7 +674,13 @@ void setPowerLevel(uint16_t powerLevel)
   secondI2CPort.beginTransmission(MCP4716_ADDR);
     secondI2CPort.write(MCP47X6_CMD_VOLDAC | ((byte)(dacVal >> 6) & 0x0F)); // Since this writes the PD0 and PD1 bits it wakes the DAC back up from a sleeping state
     secondI2CPort.write((byte)((dacVal << 2) & 0xFC));
-  secondI2CPort.endTransmission(true);
+  byte rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+    Serial.print("I2C Pwr level err:");
+    Serial.print(rVal);
+    Serial.println(":");
+  }
 }
 
 void poweredOn()
@@ -623,8 +690,15 @@ void poweredOn()
   secondI2CPort.beginTransmission(MCP23008_ADDR);
     secondI2CPort.write(OLAT);
     secondI2CPort.write(cookerStatus.ioLatchState);
-  secondI2CPort.endTransmission(true);
-  cookerStatus.isOn = true;
+  byte rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+    Serial.print("I2C Pwr on err:");
+    Serial.print(rVal);
+    Serial.println(":");
+  } else { // Only set the cooker on flag if we successfully sent the bytes
+    cookerStatus.isOn = true;
+  }
 }
 
 void poweredOff()
@@ -634,8 +708,15 @@ void poweredOff()
   secondI2CPort.beginTransmission(MCP23008_ADDR);
     secondI2CPort.write(OLAT);
     secondI2CPort.write(cookerStatus.ioLatchState);
-  secondI2CPort.endTransmission(true);
-  cookerStatus.isOn = false;
+  byte rVal = secondI2CPort.endTransmission(true);
+  if(rVal) {
+    setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
+    Serial.print("I2C Pwr off err:");
+    Serial.print(rVal);
+    Serial.println(":");
+  } else {  // Only clear the cooker flag if we successfully sent the bytes
+    cookerStatus.isOn = false;
+  }
 }
 
 struct RTDMeasurement getRTDTemperature(uint16_t rtdReg, uint8_t fault)
