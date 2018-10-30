@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <Wire.h>
+#include <SoftWire.h>
 #include <PID_v1.h>
 #include <RingBuffer.h>
 #include <Adafruit_MAX31865.h>
@@ -61,12 +62,13 @@ RingBuffer<uint16_t, 16> maxRTDReadings[2];
 #define MCP4716_FULLSCALE (0x3FF)
 #define MCP4716_DEFAULTCFG (0b00100)
 
-#define POWERHYST 5
+#define POWERHYST 10
 
 // #define DEBUGSTARTUP
 // #define DEBUGSTATE
 
-TwoWire secondI2CPort(2);
+//TwoWire secondI2CPort(2);
+SoftWire secondI2CPort(PB10, PB11, 150);
 
 Vfd vfd(0);  //create new Vfd instance with display address 7
 
@@ -88,14 +90,15 @@ static struct CookerState {
   uint_fast8_t isConnected;
   uint16_t powerLevel;
   uint_fast32_t controlTimeout;
-} cookerStatus = {.ioLatchState = BUFFEROFF | POWEROFF, .isOn = false, .isConnected = false, .powerLevel = 0, .controlTimeout = 0};
+  int commandMode;
+} cookerStatus = {.ioLatchState = BUFFEROFF | POWEROFF, .isOn = false, .isConnected = false, .powerLevel = 0, .controlTimeout = 0, .commandMode = MANUAL};
 
 static double measuredTemp = 15;
 static double outputDrive = 0;
-static double targetTemp = 55;
+static double targetTemp = 76;
 
 //Specify the links and initial tuning parameters
-static PID myPID(&measuredTemp, &outputDrive, &targetTemp, 80, 1.5, 90, P_ON_M, DIRECT); // P_ON_M specifies that Proportional on Measurement be used
+static PID myPID(&measuredTemp, &outputDrive, &targetTemp, 95, 1.25, 125, P_ON_M, DIRECT); // P_ON_M specifies that Proportional on Measurement be used
                                                                                      // P_ON_E (Proportional on Error) is the default behavior
 
 template<typename T> T SQR(T val) {return val*val;}
@@ -143,7 +146,7 @@ void setup() {
   vfd.setLEDBits((~RED_BIT) & (~YELLOW_BIT) & ~(GREEN_BIT));
 
   myPID.SetSampleTime(400);
-  myPID.SetOutputLimits(0, 1230);
+  myPID.SetOutputLimits(0, 1039);
   myPID.SetMode(MANUAL);
 
   Serial.println("Initialisation complete.");
@@ -207,7 +210,7 @@ void loop() {
         // currentTemps[rtdIdx] = alpha*rtdValue.temp + (1 - alpha)*currentTemps[rtdIdx];
 
         if(rtdIdx == selRTD) {
-          myPID.SetMode(AUTOMATIC);
+          myPID.SetMode(cookerStatus.commandMode);
         }
       }
 
@@ -222,11 +225,11 @@ void loop() {
     }
   }
 
-measuredTemp = 20;
   checkSerialCommands(&nextStatusUpdate);
+  iwdg_feed();
   updateCookerState();
+  iwdg_feed();
   updateStatusDisplay(&nextStatusUpdate, currentTemps, selRTD);
-
   iwdg_feed();
 }
 
@@ -238,17 +241,39 @@ void checkSerialCommands(uint_fast32_t *nextStatusUpdate)
     inChar = tolower(inChar);
 
     if(inChar == '+') {
-      // cookerPowerUp();
-      *nextStatusUpdate = 0;
+      if(cookerStatus.isOn && cookerStatus.isConnected) {
+        if(cookerStatus.powerLevel < 868) {
+          setPowerLevel(cookerStatus.powerLevel + 31);
+          *nextStatusUpdate = 0;
+        }
+      }
     } else if(inChar == '-') {
-      // cookerPowerDown();
-      *nextStatusUpdate = 0;
+      if(cookerStatus.isOn && cookerStatus.isConnected) {
+        if(cookerStatus.powerLevel > 0) {
+          setPowerLevel(cookerStatus.powerLevel - 31);
+          *nextStatusUpdate = 0;
+        }
+      }
     } else if(inChar == '1') {
-      // cookerTurnOn();
-      *nextStatusUpdate = 0;
+      if(!cookerStatus.isOn && cookerStatus.isConnected) {
+        setPowerLevel(0);
+        poweredOn();
+        *nextStatusUpdate = 0;
+      }
     } else if(inChar == '0') {
-      // cookerTurnOff();
-      *nextStatusUpdate = 0;
+      if(cookerStatus.isOn && cookerStatus.isConnected) {
+        setPowerLevel(0);
+        poweredOff();
+        *nextStatusUpdate = 0;
+      }
+    } else if(inChar == 'm') {
+      cookerStatus.commandMode = MANUAL;
+      myPID.SetMode(cookerStatus.commandMode);
+      Serial.println("Manual mode");
+    } else if(inChar == 'a') {
+      cookerStatus.commandMode = AUTOMATIC;
+      myPID.SetMode(cookerStatus.commandMode);
+      Serial.println("Automatic mode");
     } else if(inChar == 'c') {
       connectRemoteControl();
       *nextStatusUpdate = 0;
@@ -263,56 +288,59 @@ void updateCookerState()
 {  
   bool updatedPID = myPID.Compute();
 
-  if(updatedPID) {
-    cookerStatus.controlTimeout = millis() + 1000;
-
-    if(cookerStatus.isConnected) {
-      double onLevel = 207;
-      if(!cookerStatus.isOn) {
-        onLevel += POWERHYST;
-      }
-      // Turn PID output into a drive signal
-      if(outputDrive >= onLevel) {
-        static uint_fast8_t toggle;
-        Serial.print("CFGCKST");
+  if(myPID.GetMode() == AUTOMATIC) {
+    if(updatedPID) {
+      cookerStatus.controlTimeout = millis() + 1000;
+  
+      if(cookerStatus.isConnected) {
+        double onLevel = 171;
         if(!cookerStatus.isOn) {
-          // poweredOn();
+          onLevel += POWERHYST;
         }
-        // setPowerLevel(outputDrive - 207);
-        iwdg_feed();
-        poweredOff();
-        setPowerLevel(0);
-        iwdg_feed();
-        Serial.println("end");
-        if(toggle++ & 0x1) {
-          if(cookerStatus.powerLevel > 816) { // 4 to 5
-            vfd.setLEDBits(YELLOW_BIT);
-          } else if(cookerStatus.powerLevel > 612) { // 3 to 4
-            vfd.setLEDBits(GREEN_BIT | YELLOW_BIT);
-          } else if(cookerStatus.powerLevel > 408) { // 2 to 3
-            vfd.setLEDBits(GREEN_BIT);
-          } else if(cookerStatus.powerLevel > 204) { // 1 to 2
-            vfd.setLEDBits(GREEN_BIT | RED_BIT);
-          } else { // 0 to 1
-            vfd.setLEDBits(RED_BIT);
+        // Turn PID output into a drive signal
+        if(outputDrive >= onLevel) {
+          static uint_fast8_t toggle;
+          // Serial.print("CFGCKST");
+          if(!cookerStatus.isOn) {
+            poweredOn();
+          }
+          setPowerLevel(outputDrive - 171);
+          // iwdg_feed();
+          // poweredOff();
+          // setPowerLevel(0);
+          // iwdg_feed();
+          // Serial.println("end");
+          if(toggle++ & 0x1) {
+            if(cookerStatus.powerLevel > 696) { // 4 to 5
+              vfd.setLEDBits(YELLOW_BIT);
+            } else if(cookerStatus.powerLevel > 522) { // 3 to 4
+              vfd.setLEDBits(GREEN_BIT | YELLOW_BIT);
+            } else if(cookerStatus.powerLevel > 348) { // 2 to 3
+              vfd.setLEDBits(GREEN_BIT);
+            } else if(cookerStatus.powerLevel > 174) { // 1 to 2
+              vfd.setLEDBits(GREEN_BIT | RED_BIT);
+            } else { // 0 to 1
+              vfd.setLEDBits(RED_BIT);
+            }
+          } else {
+            vfd.setLEDBits(0); // disable all LEDs
           }
         } else {
-          vfd.setLEDBits(0); // disable all LEDs
+          if(cookerStatus.isOn) {
+            poweredOff();
+            setPowerLevel(0);
+          }
+          vfd.setLEDBits(RED_BIT);
         }
       } else {
-        if(cookerStatus.isOn) {
-          poweredOff();
-        }
-        vfd.setLEDBits(RED_BIT);
+        vfd.setLEDBits(0);
       }
-    } else {
-      vfd.setLEDBits(0);
-    }
-  } else if(cookerStatus.controlTimeout < millis()) {
-    cookerStatus.controlTimeout = millis() + 5000;
-    if(cookerStatus.isConnected) {
-      setPowerLevel(0);
-      poweredOff();
+    } else if(cookerStatus.controlTimeout < millis()) {
+      cookerStatus.controlTimeout = millis() + 5000;
+      if(cookerStatus.isConnected) {
+        setPowerLevel(0);
+        poweredOff();
+      }
     }
   }
 }
@@ -601,7 +629,9 @@ void connectRemoteControl()
   if(rVal) {
     setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
   }
-
+  
+  iwdg_feed();
+  
   // Set the latch bits to power up the opamp thus driving the power level but keep the cooker off
   cookerStatus.ioLatchState = ~BUFFEROFF | POWEROFF;
   secondI2CPort.beginTransmission(MCP23008_ADDR);
@@ -638,6 +668,8 @@ void disconnectRemoteControl()
     setCookerI2CClock(); // We need to repeat this beacuse the error handling code resets the I2C peripheral
   }
 
+  iwdg_feed();
+  
   // Turn off the DAC
   secondI2CPort.beginTransmission(MCP4716_ADDR);
     secondI2CPort.write(MCP47X6_CMD_VOLCONFIG | MCP4716_DEFAULTCFG); // This sets zero gain, shut down with 100k to ground and Vref is Vdd by default (in EEPROM)
@@ -647,8 +679,12 @@ void disconnectRemoteControl()
   }
 
   // Wait a bit for the unit to notice that the power level may have changed
-  delay(250);
-  
+  for(uint_fast8_t iDly = 0; iDly < 5; iDly++) {
+    iwdg_feed();
+    delay(50);
+  }
+  iwdg_feed();
+
   // Set the latch bits to set the remote on/off switch off
   cookerStatus.ioLatchState |= POWEROFF;
   secondI2CPort.beginTransmission(MCP23008_ADDR);
