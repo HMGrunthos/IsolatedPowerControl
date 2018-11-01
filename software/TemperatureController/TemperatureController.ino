@@ -62,7 +62,7 @@ RingBuffer<uint16_t, 16> maxRTDReadings[2];
 #define MCP4716_FULLSCALE (0x3FF)
 #define MCP4716_DEFAULTCFG (0b00100)
 
-#define POWERHYST 10
+#define POWERHYST 15
 
 // #define DEBUGSTARTUP
 // #define DEBUGSTATE
@@ -300,16 +300,14 @@ void updateCookerState()
         // Turn PID output into a drive signal
         if(outputDrive >= onLevel) {
           static uint_fast8_t toggle;
-          // Serial.print("CFGCKST");
+          Serial.print("CFGCKST");
           if(!cookerStatus.isOn) {
-            poweredOn();
+            //poweredOn();
           }
-          setPowerLevel(outputDrive - 171);
-          // iwdg_feed();
-          // poweredOff();
-          // setPowerLevel(0);
-          // iwdg_feed();
-          // Serial.println("end");
+          //setPowerLevel(outputDrive - 171);
+          poweredOff();
+          setPowerLevel(0);
+          Serial.println("end");
           if(toggle++ & 0x1) {
             if(cookerStatus.powerLevel > 696) { // 4 to 5
               vfd.setLEDBits(YELLOW_BIT);
@@ -391,10 +389,15 @@ void updateStatusDisplay(uint_fast32_t *nextStatusUpdate, struct RTDEstimate *cu
     Serial.println(":");
 
     if(currentTemps[selRTD].ready) {
-      char pString[12];
-      static char lastString[12] = "";
+      char conStr[13];
+      char pString[13] = "";
+      static char lastString[13] = "";
+      static uint_fast8_t cRollIdx = 0;
 
-      sprintf(pString, "Temp%i %6.2f", 1, currentTemps[selRTD].xEst);
+      sprintf(conStr, "Temp%i %6.2f", 1, currentTemps[selRTD].xEst);
+      strncpy(pString, conStr + cRollIdx, 12 - cRollIdx);
+      strncat(pString, conStr, cRollIdx);      
+      cRollIdx = (cRollIdx+1) % 12;
 
       uint_fast8_t firstDiff;
       for(firstDiff = 0; (firstDiff < 12) && (pString[firstDiff] == lastString[firstDiff]); firstDiff++);
